@@ -6,6 +6,7 @@ output:
     toc_float:
       collapsed: true
     code_folding: hide
+knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), 'index.html')) })
 ---
 
 <style type="text/css">
@@ -402,9 +403,63 @@ I've broken our loans up into three types of investments:
 * **Affordable Housing** investments have gone to intermediaries to renovate and constructed housing, almost all single-family.
 * **Community Facility** investments have enabled nonprofits to build new space for their operations or programming.
 
+## Chart
+
+You can mouse over this chart to see some descriptions of the loans we've made.
+
+```{r, warning=FALSE, out.width='100%', align = 'center'}
+
+# Treemap
+
+impact_data %<>% 
+  mutate(
+    Amount = as.numeric(Amount),
+    Category = if_else(Category == "Small Business Reloan", "Small Business", Category))
+
+level3 <- impact_data %>%
+  transmute(
+    Category,
+    Name = paste0(Organization, " ", Project),
+    Name = case_when(
+      Name == "JFCS Small Business Lending" & Amount == 100000 ~ "JFCS Small Business Lending #1", 
+      Name == "JFCS Small Business Lending" & Amount == 125000 ~ "JFCS Small Business Lending #2",
+      TRUE ~ Name),
+    Overview,
+    Amount)
+
+level2 <- level3 %>%
+  group_by(Category) %>%
+  summarize(Amount = sum(Amount), .groups = "drop") %>%
+  mutate(
+    Name = Category,
+    Overview = "",
+    Category = "")
+
+graph_df <- bind_rows(level3, level2)
+
+plot_ly(
+  type    = "treemap",
+  labels  = str_wrap(graph_df$Name[], width=25),
+  parents = graph_df$Category,
+  values  = graph_df$Amount,
+  text = gsub("(.{50,}?)\\s", "\\1\n", graph_df$Overview),
+  texttemplate = '<b>%{label}</b><br>%{value:$,.3s}',
+  branchvalues = "total",
+  domain  = list(column=1)) %>%
+  layout(
+    treemapcolorway = cfl_colors,
+    #uniformtext=list(minsize = 10, mode='hide'),
+    outsidetextfont = list(size = 30),
+    font = list(family = "Poppins"),
+    plot_bgcolor = 'transparent',
+    paper_bgcolor = 'transparent')
+        
+        
+```
+
 ## Table
 
-Here is a list of theYou can find more detailed information at <br>
+Here is a list of our investments. You can find more detailed information at <br>
 N:\\Impact Investing\\05 Investments\\00_Materials For Investee Management\\Impact Capital Social Impact Data.xlsx
 
 ```{r}
@@ -440,55 +495,6 @@ table_df %>%
 
 ```
 
-## Chart
-
-You can mouse over this chart to see some descriptions of the loans we've made.
-
-```{r, warning=FALSE, out.width='100%', align = 'center'}
-
-# Treemap
-
-impact_data %<>% 
-  mutate(
-    Amount = as.numeric(Amount),
-    Category = if_else(Category == "Small Business Reloan", "Small Business", Category))
-
-level3 <- impact_data %>%
-  transmute(
-    Category,
-    Name = paste0(Organization, " ", Project),
-    Overview,
-    Amount)
-
-level2 <- level3 %>%
-  group_by(Category) %>%
-  summarize(Amount = sum(Amount), .groups = "drop") %>%
-  mutate(
-    Name = Category,
-    Overview = "",
-    Category = "")
-
-graph_df <- bind_rows(level3, level2)
-
-plot_ly(
-  type    = "treemap",
-  labels  = str_wrap(graph_df$Name[], width=25),
-  parents = graph_df$Category,
-  values  = graph_df$Amount,
-  text = gsub("(.{50,}?)\\s", "\\1\n", graph_df$Overview),
-  texttemplate = '<b>%{label}</b><br>%{value:$,.3s}',
-  branchvalues = "total",
-  domain  = list(column=1)) %>%
-  layout(
-    treemapcolorway = cfl_colors,
-    #uniformtext=list(minsize = 10, mode='hide'),
-    outsidetextfont = list(size = 30),
-    font = list(family = "Poppins"),
-    plot_bgcolor = 'transparent',
-    paper_bgcolor = 'transparent')
-        
-        
-```
 
 # Where Have We Invested? {.tabset}
 
@@ -617,6 +623,38 @@ ic_map("Housing",
        these_breaks = c(100000, 250000, 500000),
        by_investee = TRUE)
 ```
+
+# Our Terms
+
+```{r}
+
+graph_df <- impact_data %>%
+  mutate(
+    Term = as.numeric(Years) * 12,
+    Rate = Interest)
+
+
+p<-ggplot(graph_df, 
+       aes(x = Term, y = Interest, size = Amount*5, color = Category, text = paste0(Organization, " ", Project), alpha = 0.5)) +
+  geom_jitter(width = 0, height = 0) +
+  scale_size(range = c(0,20)) +
+  labs(
+    title = "CFL Impact Capital Investment Terms",
+    x = "Term (Months)",
+    y = "Interest Rate (%)",
+    fill = "Category",
+    size = "",
+    alpha = "") +
+  ylim(0, 5) +
+  xlim(0, 132)
+
+  
+
+ggplotly(p)
+
+
+```
+
 
 ```{r pressure, eval=FALSE}
 
