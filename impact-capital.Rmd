@@ -1,0 +1,650 @@
+---
+title: "CFL Impact Capital Portfolio Data"
+output: 
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: true
+    code_folding: hide
+---
+
+<style type="text/css">
+  body{
+  font-family: 'Poppins';
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(leaflet)
+library(readr)
+library(tidygeocoder)
+library(magrittr)
+library(sf)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(leaflegend)
+library(scales)
+library(capture)
+
+library(glptools)
+
+
+```
+
+```{r helper_functions, include=FALSE}
+
+# Adapt functions from leaflegend package to be able to specify breaks
+
+addLegendSize <- function (map, pal, values, size_calc, title = NULL, labelStyle = "", shape = "rect", 
+    orientation = c("vertical", "horizontal"), color, fillColor = color, 
+    strokeWidth = 1, opacity = 1, fillOpacity = opacity, breaks = 5, 
+    baseSize = 20, numberFormat = function(x) {
+        prettyNum(x, big.mark = ",", scientific = FALSE, digits = 1)
+    }, group = NULL, className = "info legend leaflet-control", 
+    data = leaflet::getMapData(map), ...) 
+{
+    values <- leaflegend:::parseValues(values = values, data = data)
+    sizes <- this_sizeBreaks(breaks, size_calc, baseSize)
+    if (missing(color)) {
+        stopifnot(missing(color) & !missing(pal))
+        colors <- pal(as.numeric(names(sizes)))
+    }
+    else {
+        stopifnot(length(color) == 1 || length(color) == length(breaks))
+        colors <- color
+    }
+    if (missing(fillColor)) {
+        if (!missing(pal)) {
+            fillColors <- pal(as.numeric(names(sizes)))
+        }
+        else {
+            fillColors <- colors
+        }
+    }
+    else {
+        stopifnot(length(fillColor) == 1 || length(fillColor) == 
+            length(breaks))
+        fillColors <- fillColor
+    }
+    labels <- numberFormat(as.numeric(names(sizes)))
+    if (length(names(breaks)) == length(breaks) && length(breaks) > 
+        1) {
+        labels <- names(breaks)
+    }
+    symbols <- Map(makeSymbol, shape = shape, width = sizes, 
+        height = sizes, color = colors, fillColor = fillColors, 
+        opacity = opacity, fillOpacity = fillOpacity, `stroke-width` = strokeWidth)
+    addLegendImage(map, images = symbols, labels = labels, title = title, 
+        labelStyle = labelStyle, orientation = orientation, width = sizes, 
+        height = sizes, group = group, className = className, 
+        ...)
+}
+
+this_sizeBreaks <- function(breaks, size_calc, baseSize, ...) {
+  
+  sizes <- size_calc(breaks) * baseSize
+  stats::setNames(sizes, breaks)
+  
+}
+```
+
+```{r read_data, eval=FALSE}
+
+# Read in Impact Capital Data
+#investments <- read_csv("Impact Capital Data.csv")
+
+file_name <- "N:/Impact Investing/05 Investments/00_Materials For Investee Management/Impact Capital Social Impact Data.xlsx"
+
+impact_data   <- readxl::read_xlsx(file_name, skip = 1)
+housing_data  <- readxl::read_xlsx(file_name, sheet = "Housing")
+business_data <- readxl::read_xlsx(file_name, sheet = "Businesses")
+
+impact_data %<>%
+  filter(`Portfolio #` %in% 1:19)
+
+Sys.setenv(GEOCODIO_API_KEY = "cccff3c3cc3aca633fc09ccc3901c1a861a9069")
+
+# Geocode Investee/Facility data
+
+impact_data %<>%
+  geocode(address = Address)
+
+impact_data_2 <- impact_data %>%
+  filter(is.na(lat)) %>%
+  select(-lat, -long)
+
+impact_data_2 %<>%
+  geocode(
+    address = Address, method = "geocodio")
+
+impact_data %<>% filter(!is.na(lat))
+
+impact_data %<>%
+  bind_rows(impact_data_2)
+
+impact_data %<>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+# Geocode Housing data
+## Need to pass some addresses through Geocodio for success
+
+housing_data %<>%
+  geocode(
+    address = Address)
+
+housing_data_2 <- housing_data %>%
+  filter(is.na(lat)) %>%
+  select(-lat, -long)
+
+housing_data_2 %<>%
+  geocode(
+    address = Address, method = "geocodio")
+
+housing_data %<>% filter(!is.na(lat))
+
+housing_data %<>%
+  bind_rows(housing_data_2)
+
+housing_data %<>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+# Estimate business data
+
+business_data %<>%
+  filter(Zip %in% map_zip$zip)
+
+business_points <- list()
+
+for(b in 1:nrow(business_data)) {
+  
+  this_zip <- business_data$Zip[b]
+  this_point = st_sample(filter(map_zip, zip == this_zip), size=1)
+  
+  business_points <- c(business_points, this_point)
+}
+
+business_data$geometry = business_points
+
+business_data %<>% st_as_sf(crs = 4326)
+
+save(impact_data, housing_data, business_data, file = "impact_capital_geocoded.RData")
+```
+
+```{r load_and_clean}
+
+load("impact_capital_geocoded.RData")
+
+impact_data %<>%
+  mutate(Organization = if_else(Organization == "PII", "Portland Investment Initiative", Organization))
+
+impact_data_details <- impact_data %>%
+  select(
+    `Portfolio #`,
+    Organization,
+    Project,
+    Originated,
+    Amount) %>%
+  st_drop_geometry()
+
+facility_data <- impact_data %>%
+  filter(Category == "Facility Construction")
+
+facility_data %<>%
+  transmute(
+    `Portfolio #`,
+    Organization,
+    Project,
+    Originated,
+    Type = "Facility",
+    Amount = as.numeric(Amount),
+    geometry)
+
+housing_data %<>%
+  left_join(impact_data_details, by = "Portfolio #") %>%
+  transmute(
+    `Portfolio #`,
+    Organization,
+    Project,
+    Originated,
+    Type = "Housing",
+    Amount = as.numeric(Amount),
+    geometry)
+
+housing_data %<>%
+  group_by(`Portfolio #`) %>%
+  mutate(Amount = Amount / n()) %>%
+  ungroup()
+
+impact_data_details %<>% select(-Amount)
+
+business_data %<>%
+  left_join(impact_data_details, by = "Portfolio #") %>%
+  transmute(
+     `Portfolio #`,
+    Organization,
+    Project,
+    Originated,
+    Loanee,
+    Type = "Business",
+    Amount,
+    geometry)
+
+all_projects <- bind_rows(facility_data, housing_data, business_data)
+
+all_projects %<>%
+  mutate(
+    simple_label = paste0(Organization, " - ", Project),
+    number_label = paste0("Loan #", `Portfolio #`, ". ", simple_label)) %>%
+  arrange(`Portfolio #`)
+
+map_lou <- map_county %>% filter(FIPS == "21111")
+
+cfl_colors <- c("#8431A6", "#4480FF", "#FF3D59", "#FF8000", "#80CD00", "#704D80", "#654E39", "#424D66", "#446141")
+
+
+#"#FF7600" "#F16400" "#FFDBA0" "#FFBF33"	 "#452001"
+
+ic_map <- function(types, size_scale = 1, element_id, size = "variable", these_breaks = c(10000, 50000, 100000, 250000, 500000), by_investee = FALSE) {
+  
+  # Filter projects to type
+  these_projects <- filter(all_projects, Type %in% types)
+  
+  these_projects %<>%
+    mutate(
+      simple_label = factor(simple_label, levels = unique(simple_label), ordered = TRUE),
+      number_label = factor(number_label, levels = unique(number_label), ordered = TRUE))
+  
+  # Create Palette
+  if (by_investee == FALSE) {
+    pal <- colorFactor(
+      cfl_colors[1:3], 
+      domain = c("Facility", "Housing", "Business"))
+    
+    these_projects$fill_col = these_projects$Type
+    
+  } else {
+    pal <- colorFactor(
+      cfl_colors[1:length(unique(these_projects$number_label))], 
+      domain = unique(these_projects$number_label))
+    
+    these_projects$fill_col = these_projects$number_label
+  }
+
+  
+  # Create labels
+  labels <- sprintf("%s<br/>%s",
+                  paste0(these_projects$Organization, " - ", these_projects$Project),
+                  dollar(these_projects$Amount)) %>%
+    lapply(htmltools::HTML)
+  
+  # Basemap including Louisville outline
+  
+  l <- leaflet(elementId = element_id) %>%
+    addPolygons(
+      data = map_lou, 
+      fillOpacity = 0,
+      color = "#112142")
+  
+  # Generate markers of all the same size or variable size
+  
+  if (size == "variable") {
+    l %<>%
+    addCircleMarkers(
+      data = these_projects,
+      radius = ~sqrt(Amount)/25 * size_scale,
+      color = ~pal(fill_col),
+      label = ~labels,
+      opacity = 0.8,
+      fillOpacity = 0.2,
+      weight = 2,
+      labelOptions = labelOptions(style = 
+        list("font-weight" = "normal", 
+             "font-family" = "Poppins", 
+             padding = "3px 8px"),
+        textsize = "15px",
+        direction = "auto"))
+  } else {
+    l %<>%
+      addCircleMarkers(
+        data = these_projects,
+        radius = ~5,
+        color = ~pal(fill_col),
+        label = ~labels,
+        opacity = 0.8,
+        fillOpacity = 0.2,
+        weight = 2,
+        labelOptions = labelOptions(style = 
+          list("font-weight" = "normal", 
+               "font-family" = "Poppins", 
+               padding = "3px 8px"),
+          textsize = "15px",
+          direction = "auto"))
+  }
+  
+  # Add Type legend if multiple types 
+  
+  if(length(types) > 1 & by_investee == FALSE) {
+    l %<>%
+      addLegend(
+        #pal = pal, 
+        #values = c("Facility", "Housing", "Business"), 
+        colors = cfl_colors[1:3],
+        labels = c("Small Business", "Community Facility", "Affordable Housing"),
+        opacity = 0.7, 
+        title = "Type of Project", 
+        position = "bottomright")
+  } else if (by_investee == TRUE) {
+    l %<>%
+      addLegend(
+        pal = pal, values = unique(these_projects$number_label), opacity = 0.7, title = "Loan", position = "bottomright")
+  }
+  
+  # Add size legend if size is variable
+  
+  if (size == "variable") {
+    
+    fill_color <- if(length(types) == 1 & by_investee == FALSE) pal(types) else "#112142"
+  
+    l %<>%
+      addLegendSize(
+        values =  these_projects$Amount,
+        baseSize = 2,
+        breaks = these_breaks,
+        size_calc = function(x){sqrt(x)/25 * size_scale},
+        color = fill_color,
+        fillColor = fill_color,
+        strokeWidth = 2,
+        opacity = .5,
+        title = "Loan Amount",
+        numberFormat = dollar_format(),
+        shape = 'circle',
+        position = "bottomright")
+  }
+  
+  # Add basemaps
+  l %<>%
+    addProviderTiles(providers$OpenStreetMap.BZH, group = "Blank") %>%
+    addProviderTiles(providers$OpenStreetMap.HOT, group = "OpenStreetMap") %>%
+    addProviderTiles(providers$Stamen.Watercolor, group = "Watercolor") %>%
+    addProviderTiles(providers$CartoDB.PositronNoLabels, group = "Positron") %>%
+    addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Voyager") %>%
+    addLayersControl(
+      baseGroups = c("Voyager", "OpenStreetMap", "Watercolor", "Positron", "Blank"),
+      options = layersControlOptions(collapsed = TRUE))
+  
+  l
+}
+```
+
+# Welcome
+
+Hey there, Harrison here. These webpages are often the easiest way for me to share data and information that I put together, so you'll probably see more of them. You should be able to navigate using the table of contents on the left. On the right, the little "show" boxes will reveal the code I used to create what's in front of you. (They can be hidden completely, but I think they're kinda fun.)
+
+Two nice features of this:
+
+* The webpages are easy to edit or update. I can just make the change on my computer and push it to the web.
+* This is an easy way to share and reshare info. While I normally just email things like a normal human, it's easy to "clean things up" to share with external audiences. In fact, most of the GLP reports back to in 2019 were created in this format and just uploaded to the GLP website.
+
+I put a medium amount of effort into this, so if I can add or edit anything for it to be useful, let me know. I didn't want to polish something without an end in mind.
+
+# Our Portfolio {.tabset}
+
+I've broken our loans up into three types of investments:
+
+* **Small Business** investments have gone to intermediaries (LHOME, Jewish Family and Career Services, and Access Ventures) to be re-lent to small businesses.
+* **Affordable Housing** investments have gone to intermediaries to renovate and constructed housing, almost all single-family.
+* **Community Facility** investments have enabled nonprofits to build new space for their operations or programming.
+
+## Table
+
+Here is a list of theYou can find more detailed information at <br>
+N:\\Impact Investing\\05 Investments\\00_Materials For Investee Management\\Impact Capital Social Impact Data.xlsx
+
+```{r}
+
+table_df <- impact_data %>%
+  transmute(
+    Organization,
+    Project,
+    Type = Category,
+    Date = Originated,
+    Amount = as.numeric(Amount)) %>%
+  st_drop_geometry()
+
+library(gt)
+
+table_df %>%
+  arrange(Date) %>%
+  gt() %>%
+  opt_row_striping() %>%
+  tab_style(
+    cell_text(weight= "bold"),
+    locations = cells_column_labels()) %>%
+  tab_style(
+    cell_text(size = "small"),
+    locations = cells_body()) %>%
+  opt_table_font("Poppins") %>%
+  fmt_currency(
+    columns = c(Amount), 
+    use_subunits = FALSE) %>%
+  fmt_date(
+    columns = c(Date),
+    date_style = "yMMMM")
+
+```
+
+## Chart
+
+You can mouse over this chart to see some descriptions of the loans we've made.
+
+```{r, warning=FALSE, out.width='100%', align = 'center'}
+
+# Treemap
+
+impact_data %<>% 
+  mutate(
+    Amount = as.numeric(Amount),
+    Category = if_else(Category == "Small Business Reloan", "Small Business", Category))
+
+level3 <- impact_data %>%
+  transmute(
+    Category,
+    Name = paste0(Organization, " ", Project),
+    Overview,
+    Amount)
+
+level2 <- level3 %>%
+  group_by(Category) %>%
+  summarize(Amount = sum(Amount), .groups = "drop") %>%
+  mutate(
+    Name = Category,
+    Overview = "",
+    Category = "")
+
+graph_df <- bind_rows(level3, level2)
+
+plot_ly(
+  type    = "treemap",
+  labels  = str_wrap(graph_df$Name[], width=25),
+  parents = graph_df$Category,
+  values  = graph_df$Amount,
+  text = gsub("(.{50,}?)\\s", "\\1\n", graph_df$Overview),
+  texttemplate = '<b>%{label}</b><br>%{value:$,.3s}',
+  branchvalues = "total",
+  domain  = list(column=1)) %>%
+  layout(
+    treemapcolorway = cfl_colors,
+    #uniformtext=list(minsize = 10, mode='hide'),
+    outsidetextfont = list(size = 30),
+    font = list(family = "Poppins"),
+    plot_bgcolor = 'transparent',
+    paper_bgcolor = 'transparent')
+        
+        
+```
+
+# Where Have We Invested? {.tabset}
+
+Impact Capital loans have been made across Louisville (and even a couple beyond). This map shows where our loans have gone. The color represents the type of loan.
+
+Using the maps:
+
+* You can hover over the circles below to see the project and the investment amount. Many dollar amounts for housing and business loans are estimated where we don't know out exact investment in each transaction.
+* You can mouse over the box in the upper-right corner to change the background.
+* You can click "Download Map" to save an image of whatever view you've created.
+
+## Equal-Size
+
+```{r, out.width='100%', echo=FALSE}
+capture("#all_types2", "CFL Impact Capital Investment Map", "Download Map", scale = 2)
+
+ic_map(c("Facility", "Business", "Housing"), 
+       element_id = "all_types2", 
+       size = "constant")
+```
+
+## Scaled to Amount
+
+```{r, out.width='100%', echo=FALSE}
+capture("#all_types1", "CFL Impact Capital Investment Map", "Download Map")
+
+ic_map(c("Facility", "Business", "Housing"), 
+       these_breaks = c(10000, 100000, 250000, 500000),
+       element_id = "all_types1")
+```
+
+# Community Facilities {.tabset}
+
+CFL Impact Capital has made 9 investments to help partners build or renovate community facilities totaling 174,000 square feet.
+
+## Equal-Size
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Facility1", "CFL Impact Capital Community Facility Investment Map", "Download Map")
+
+ic_map("Facility", 
+       element_id = "Facility1", 
+       size = "constant")
+```
+
+## Scaled to Amount
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Facility2", "CFL Impact Capital Community Facility Investment Map", "Download Map")
+
+ic_map("Facility", 
+       element_id = "Facility2",
+       these_breaks = c(100000, 250000, 500000))
+```
+
+# Businesses {.tabset}
+
+CFL Impact Capital has made 5 investments totaling \$925,000 to intermediaries to be reloaned to small businesses. To date, our partners have used that capital to make 97 loans totaling $954,128.
+
+FYI, Many of these investments don't have an exact address but they do have a zip code. They are shown at a random location in that zip code. This works just fine for a sense of where our loans are found across Louisville, though you shouldn't try to trace these all the way to the street level.
+
+## Equal-Size
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Business1", "CFL Impact capital Business Investment Map", "Download Map")
+
+ic_map("Business", 
+       element_id = "Business1", 
+       size = "constant")
+```
+
+## Scaled to Amount
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Business2", "CFL Impact capital Business Investment Map", "Download Map")
+
+ic_map("Business",
+       element_id = "Business2",
+       size_scale = 2,
+       these_breaks = c(5000, 10000, 25000))
+```
+
+## by Investee
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Business3", "CFL Impact Capital Community Facility Investment Map", "Download Map")
+
+ic_map("Business", 
+       element_id = "Business3",
+       size_scale = 2,
+       these_breaks = c(5000, 10000, 25000),
+       by_investee = TRUE)
+```
+
+# Housing {.tabset}
+
+CFL Impact Capital has made 4 loans totaling \$1,784,000 to create affordable housing units. To date, our partners have built 93 housing units. 88 have been single-family homes, and 73 have been sold to homeowners.
+
+## Equal-Size
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Housing1", "CFL Impact capital Housing Investment Map", "Download Map")
+
+ic_map("Housing", 
+       element_id = "Housing1", 
+       size = "constant")
+```
+
+## Scaled to Amount
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Housing2", "CFL Impact capital Housing Investment Map", "Download Map")
+
+ic_map("Housing", 
+       element_id = "Housing2",
+       these_breaks = c(10000, 25000, 50000))
+```
+
+## by Investee
+
+```{r, out.width='100%', echo=FALSE}
+capture("#Housing3", "CFL Impact Capital Community Facility Investment Map", "Download Map")
+
+ic_map("Housing", 
+       element_id = "Housing3",
+       these_breaks = c(100000, 250000, 500000),
+       by_investee = TRUE)
+```
+
+```{r pressure, eval=FALSE}
+
+
+icon_list <- iconList(
+  `Community Ventures` = makeIcon("logos/chef space.jpg", "logos/chef space.jpg", 120, 120),
+  AMPED = makeIcon("logos/amped.jpg", "logos/amped.jpg", 120, 120)
+)
+
+
+
+leaflet(investment_map) %>%
+  #addProviderTiles("https://stamen-tiles-{s}.a.ssl.fastly.net/watercolor/{z}/{x}/{y}.png") %>%
+  addTiles() %>%
+  #addMarkers(icon = ~icon_list[Name]) %>%
+  addCircleMarkers(
+    data = investment_map,
+    radius = ~sqrt(Amount)/50,
+    label = ~Organization,
+    opacity = 0.8,
+    fillOpacity = 0.2,
+    weight = 2,
+    labelOptions = labelOptions(style = 
+      list("font-weight" = "normal", 
+           "font-family" = "Montserrat", 
+           padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"))
+```
+
+
